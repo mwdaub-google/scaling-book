@@ -160,7 +160,7 @@ TPU v5e and Trillium (TPU v6e) pods consist of a single `16x16` 2D torus with wr
 **ICI is very fast relative to DCN, but is still slower than HBM bandwidth.** For instance, a [TPU7x](https://cloud.google.com/tpu/docs/tpu7x#system_architecture) has:
 
 * `7.92e12` bytes/s (7380 TiB/s) of HBM bandwidth per chip.
-* `1.2e12` bytes/s (1200 GB/s) of bidirectional ICI bandwidth per chip.
+* `1.2e12` bytes/s (1200 GB/s) of bidirectional ICI bandwidth per chip, or `4e11` bytes/s (400 GB/s) per axis.
 * `1e11` bytes/s (100 GB/s) of DCN (egress) bandwidth per chip.
 
 This means that when we split models across multiple chips, we need to be careful to avoid bottlenecking the MXU with slower cross-device communication.
