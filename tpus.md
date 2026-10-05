@@ -105,7 +105,7 @@ You can think of the TensorCore as basically just being a really good matrix mul
 
 The diagram above also includes a few other components like SMEM and the scalar unit, which are used for control flow handling and are discussed briefly in <a href="#appendix-a-more-on-tpu-internals">Appendix A</a>, but aren't crucial to understand. On the other hand, HBM is important and fairly simple:
 
-* **HBM** (High Bandwidth Memory) is a big chunk of fast memory that stores tensors for use by the TensorCore. The HBM capacity of TPU7x is [192GiB](https://cloud.google.com/tpu/docs/tpu7x#system_architecture).
+* **HBM** (High Bandwidth Memory) is a big chunk of fast memory that stores tensors for use by the TensorCore. HBM usually has capacity on the order of tens to hundreds of gigabytes (for example, the HBM capacity of TPU7x is [192GiB](https://cloud.google.com/tpu/docs/tpu7x#system_architecture)).
 
   * When needed for a computation, tensors are streamed out of HBM through VMEM (see below) into the MXU and the result is written from VMEM back to HBM.
 
@@ -129,7 +129,7 @@ A matmul would look nearly identical except it would load into the MXU instead o
 
 {% include figure.liquid path="assets/img/cores.png" class="img-fluid img-small" %}
 
-**Chips** are arranged in **sets of 4 on a 'tray'** connected to a **CPU host via PCIe network.** This is the format most readers will be familiar with, 4 chips (8 cores, though usually treated as 4 logical megacores) exposed through Colab or a single TPU-VM. For inference chips like the TPU v5e, we have 2 trays per host, instead of 1, but also only 1 core per chip, giving us 8 chips = 8 cores.<d-footnote>On Cloud TPU VMs, each tray is exposed as part of a separate VM, so there are once again 4 cores visible.</d-footnote>
+**Chips** are arranged in **sets of 4 on a 'tray'** connected to a **CPU host via PCIe network.** This is the format most readers will be familiar with, 4 chips (8 cores on TPU7x since it has two TensorCores per chip, though some older generations combine these into 4 logical megacores) exposed through Colab or a single TPU-VM. For inference chips like the TPU v6e, we have 2 trays per host, instead of 1, but also only 1 core per chip, giving us 8 chips = 8 cores.<d-footnote>On Cloud TPU VMs, each tray is exposed as part of a separate VM, so there are once again 4 cores visible.</d-footnote>
 
 {% include figure.liquid path="assets/img/pcie.png" class="img-fluid" %}
 
@@ -151,7 +151,7 @@ Smaller topologies (e.g. `2x2x1`, `2x2x2`) can also be requested, albeit with no
 
 {% include figure.liquid path="assets/img/subslices.png" class="img-fluid" %}
 
-Trillium (TPU v6e) pods consist of a single `16x16` 2D torus with wraparounds along any axis of size 16 (meaning an `8x16` has a wraparound on the long axis). The topology cannot expand beyond a 16x16 torus but pods can still communicate with each other over standard data-center networking (DCN), which connects TPU hosts to each other. Again, smaller topologies can be requested without wraps on dims $<16$.
+TPU v5e and Trillium (TPU v6e) pods consist of a single `16x16` 2D torus with wraparounds along any axis of size 16 (meaning an `8x16` has a wraparound on the long axis). For these generations, the topology cannot expand beyond a 16x16 torus but pods can still communicate with each other over standard data-center networking (DCN), which connects TPU hosts to each other. Again, smaller topologies can be requested without wraps on dims $<16$.
 
 {% include figure.liquid path="assets/img/more-subslices.png" class="img-fluid" %}
 
@@ -179,9 +179,9 @@ This means that when we split models across multiple chips, we need to be carefu
 
 * **Within a slice, TPUs are only connected to their nearest neighbors via ICI.** This means communication over ICI between distant chips in a slice needs to hop over the intervening chips first.
 
-* **Weight matrices need to be padded to size divisible by 256** in both dimensions to fill up the MXU (in fact, smaller axes are padded to 256).
+* **Weight matrices need to be padded to size divisible by 256** (128 on generations prior to TPU v6e) in both dimensions to fill up the MXU (in fact, smaller axes are padded to 256).
 
-* **Lower precision matrix multiplication tends to be faster.** TPU v6e can do int8/int4 matrix multiplications 2x/4x faster than bfloat16, and TPU7x can do fp8 matrix multiplications with 2x more FLOPs than bfloat16. VPU operations are still performed in fp32 or bf16.
+* **Lower precision matrix multiplication tends to be faster.** TPU v6e can do int8/int4 matrix multiplications 2x/4x faster than bfloat16, and TPU7x can do fp8 matrix multiplications with 2x more FLOPs than bfloat16. VPU operations are still performed in fp32 or bf16 (though generations prior to TPU v6e only support fp32 VPU operations).
 
 * To avoid bottlenecking the TPU compute unit, we need to **make sure the amount of communication across each channel is proportional to its speed**.
 
@@ -227,13 +227,13 @@ That's pretty cool, because *that's a reasonable lower bound on the latency of s
 
 {% enddetails %}
 
-**Question 2 [TPU details]:** Consider a full TPU v6e pod. How many total CPU hosts are there? How many TPU TensorCores? What is the total FLOPs/s for the whole pod? What is the total HBM? Do the same exercise for TPU7x pod.
+**Question 2 [TPU details]:** Consider a full TPU v5e pod. How many total CPU hosts are there? How many TPU TensorCores? What is the total FLOPs/s for the whole pod? What is the total HBM? Do the same exercise for TPU v5p pod.
 
 {% details Click here for the answer. %}
 
-**Answer:** For TPU v6e, each pod is 256 chips and each host is a 4x2 slice, so we have `256 / 8 = 32` hosts. For TPU v6e, each TPU has only one core, so we have 256 TensorCores. The total FLOPs/s is `256*9.2e14 = 2.4e17` in bfloat16. Each chip has 32GiB of HBM, so that's `256 * 32 = 8TiB` of memory.
+**Answer:** For TPU v5e, each pod is `16x16` and each host is a 4x2 slice, so we have `16*16 / 8 = 32` hosts. For TPU v5e, each TPU has only one core, so we have 256 TensorCores. The total FLOPs/s is `16*16*2e14 = 5.1e16` in bfloat16. Each chip has 16GiB of HBM, so that's `256 * 16 = 4TiB` of memory.
 
-For a full TPU7x pod, we have 9216 chips and each host is 2x2x1, so we have `9216 / (2*2) = 2304` hosts. For TPU7x, each TPU has two TensorCores, so we have `9216 * 2 = 18,432` cores. The total FLOPs/s is `9216 * 2.31e15 = 2.1e19` in bfloat16. Each chip has 192GiB of HBM, so that's `9216 * 192 = 1.7PiB` of memory.
+For a full TPU v5p pod, we have `16x20x28` chips and each host is 2x2x1, so we have `(16*20*28) / (2*2) = 2,240` hosts. For TPU v5p, each TPU has two TensorCores, so we have `8960 * 2 = 17,920` cores. The total FLOPs/s is `8960 * 4.59e14 = 4.1e18` in bfloat16. Each chip has 96GiB of HBM, so that's `8960 * 96 = 860TiB` of memory.
 
 {% enddetails %}
 
