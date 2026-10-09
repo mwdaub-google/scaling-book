@@ -99,7 +99,7 @@ You can think of the TensorCore as basically just being a really good matrix mul
   * TPUs also support lower precision matmuls with higher throughput (e.g. each TPU7x chip can do `4.6e15` fp8 OPs/s).
 
 * The **VPU** (Vector Processing Unit) performs general mathematical operations like ReLU activations or pointwise addition or multiplication between vectors. Reductions (sums) are also performed here. <a href="#appendix-a-more-on-tpu-internals">Appendix A</a> provides more details.
-* **VMEM** (Vector Memory) is an on-chip scratchpad located in the TensorCore, close to the compute units. It is much smaller than HBM (for example, 64 MiB per TensorCore on TPU7x) but has a much higher bandwidth to the MXU. VMEM operates somewhat like an L1/L2 cache on CPUs but is much larger and programmer-controlled. Data in HBM needs to be copied into VMEM before the TensorCore can do any computation with it.
+* **VMEM** (Vector Memory) is an on-chip scratchpad located in the TensorCore, close to the compute units. It is much smaller than HBM (for example, 128 MiB per chip on TPU7x vs 192 GiB of HBM) but has a much higher bandwidth to the MXU. VMEM operates somewhat like an L1/L2 cache on CPUs but is much larger and programmer-controlled. Data in HBM needs to be copied into VMEM before the TensorCore can do any computation with it.
 
 **TPUs are very, very fast at matrix multiplication**. It's mainly what they do and they do it well. [TPU7x](https://cloud.google.com/tpu/docs/tpu7x#system_architecture), one of the most powerful TPUs to date, can do `1.15e15` bf16 FLOPs / second / core or `2.3e15` bf16 FLOPs / sec / chip. A single pod of 9216 chips can do 21 bf16 exaFLOPs/s. That's *a lot*. That's one of the most powerful supercomputers in the world. And Google has a lot of them.<d-footnote>TPUs, and their systolic arrays in particular, are such powerful hardware accelerators because matrix multiplication is one of the few algorithms that uses $O(n^3)$ compute for $O(n^2)$ bytes. That makes it very easy for an ordinary ALU to be bottlenecked by compute and not by memory bandwidth.</d-footnote>
 
@@ -119,7 +119,7 @@ Here's an example of how you might perform an elementwise product from HBM:
 
 A matmul would look nearly identical except it would load into the MXU instead of the VPU/Vector unit, and the loads and stores would occur in a different order, since the same weight chunk is used for multiple chunks of activations. You can see chunks of data streaming into VMEM, then into the VREGs (vector registers), then into the Vector Unit, then back into VMEM and HBM. As we're about to see, if the load from HBM to VMEM is slower than the FLOPs in the Vector Unit (or MXU), we become "bandwidth bound" since we're starving the VPU or MXU of work.
 
-<p markdown=1 class="takeaway">**Key takeaway:** TPUs are very simple. They load weights from HBM into VMEM, then from VMEM into a systolic array which can perform around 580 trillion multiply-adds per second. The HBM $\leftrightarrow$ VMEM and VMEM $\leftrightarrow$ systolic array bandwidths set fundamental limits on what computations TPUs can do efficiently.</p>
+<p markdown=1 class="takeaway">**Key takeaway:** TPUs are very simple. They load weights from HBM into VMEM, then from VMEM into a systolic array which can perform around 290 trillion multiply-adds per second. The HBM $\leftrightarrow$ VMEM and VMEM $\leftrightarrow$ systolic array bandwidths set fundamental limits on what computations TPUs can do efficiently.</p>
 
 **VMEM and arithmetic intensity:** VMEM is much smaller than HBM but it has a much higher bandwidth to the MXU. As we saw in [Section 1](../roofline), this means if an algorithm can fit all its inputs/outputs in VMEM, it's much less likely to hit communication bottlenecks. This is particularly helpful when a computation has poor arithmetic intensity: VMEM bandwidth is ~7x higher than HBM bandwidth for TPU7x, which means an MXU operation reading from/writing to VMEM requires a ~7x lower arithmetic intensity than an operation using HBM to achieve peak FLOPs utilization. That means if we can fit our weights into VMEM instead of HBM, our matrix multiplications can be FLOPs bound at much smaller batch sizes. And it means algorithms that fundamentally have a lower arithmetic intensity can still be efficient. VMEM is just so small this is often a challenge.<d-footnote>We sometimes talk about VMEM prefetching, which refers to loading weights ahead of time in VMEM so we can mask the cost of loading for our matmuls. For instance, in a normal Transformer we can sometimes load our big feed-forward weights into VMEM during attention, which can hide the cost of the weight load if we're memory bandwidth bound. This requires our weights to be small enough or sharded enough to fit a single layer into VMEM with space to spare.</d-footnote>
 
@@ -143,7 +143,7 @@ A matmul would look nearly identical except it would load into the MXU instead o
 
 The toroidal structure reduces the maximum distance between any two nodes from $N$ to $N / 2$, making communication much faster. TPUs also have a "twisted torus" configuration that wraps the torus in a Mobius-strip like topology to further reduce the average distance between nodes.
 
-**TPU pods (connected by ICI) can get really big:** the maximum pod size (called a **superpod**) for TPU7x consists of 9216 chips, composed of reconfigurable cubes of `4x4x4` chips connected by [optical wraparound links](https://arxiv.org/pdf/2208.10041)<d-footnote>The optical switch is simply a reconfigurable connection with the same ICI bandwidth. It just lets us connect cubes while retaining a wraparound link.</d-footnote> that we can reconfigure to connect very large topologies.
+**TPU pods (connected by ICI) can get really big:** the maximum pod size (called a **superpod**) for TPU7x consists of 9216 chips, composed of reconfigurable cubes of `4x4x4` chips<d-footnote>by reconfigurable, we mean they can be dynamically re-shaped into any 3D topology of 4nx4mx4k using a shared optical switch (OCS)</d-footnote> connected by [optical wraparound links](https://arxiv.org/pdf/2208.10041)<d-footnote>The optical switch is simply a reconfigurable connection with the same ICI bandwidth. It just lets us connect cubes while retaining a wraparound link.</d-footnote> that we can reconfigure to connect very large topologies.
 
 {% include figure.liquid path="assets/img/tpu-rack.png" class="img-fluid" %}
 
@@ -159,9 +159,9 @@ TPU v5e and Trillium (TPU v6e) pods consist of a single `16x16` 2D torus with wr
 
 **ICI is very fast relative to DCN, but is still slower than HBM bandwidth.** For instance, a [TPU7x](https://cloud.google.com/tpu/docs/tpu7x#system_architecture) has:
 
-* `7.92e12` bytes/s (7380 TiB/s) of HBM bandwidth per chip.
+* `7.4e12` bytes/s (7380 GB/s) of HBM bandwidth per chip.
 * `1.2e12` bytes/s (1200 GB/s) of bidirectional ICI bandwidth per chip, or `4e11` bytes/s (400 GB/s) per axis.<d-footnote>TPU ICI links have slightly different bandwidths depending on the operation being performed. You can generally use the numbers in this doc without worry.</d-footnote>
-* `1e11` bytes/s (100 GB/s) of DCN (egress) bandwidth per chip.
+* `1.25e10` bytes/s (12.5 GB/s) of DCN (egress) bandwidth per chip.
 
 This means that when we split models across multiple chips, we need to be careful to avoid bottlenecking the MXU with slower cross-device communication.
 
@@ -233,7 +233,7 @@ That's pretty cool, because *that's a reasonable lower bound on the latency of s
 
 **Answer:** For TPU v5e, each pod is `16x16` and each host is a 4x2 slice, so we have `16*16 / 8 = 32` hosts. For TPU v5e, each TPU has only one core, so we have 256 TensorCores. The total FLOPs/s is `16*16*2e14 = 5.1e16` in bfloat16. Each chip has 16GiB of HBM, so that's `256 * 16 = 4TiB` of memory.
 
-For a full TPU v5p pod, we have `16x20x28` chips and each host is 2x2x1, so we have `(16*20*28) / (2*2) = 2,240` hosts. For TPU v5p, each TPU has two TensorCores, so we have `8960 * 2 = 17,920` cores. The total FLOPs/s is `8960 * 4.59e14 = 4.1e18` in bfloat16. Each chip has 96GiB of HBM, so that's `8960 * 96 = 860TiB` of memory.
+For a full TPU v5p pod, we have `16x20x28` chips and each host is 2x2x1, so we have `(16*20*28) / (2*2) = 2,240` hosts. For TPU v5p, each TPU has two TensorCores, so we have `8960 * 2 = 17,920` cores. The total FLOPs/s is `8960 * 4.59e14 = 4.1e18` in bfloat16. Each chip has 96GiB of HBM, so that's `8960 * 96 = 840TiB` of memory.
 
 {% enddetails %}
 
@@ -330,7 +330,7 @@ All lanes and sublanes execute the same program every cycle in a pure SIMD manne
 
 {% details Click here for the answer. %}
 
-*Answer*: Each cycle, each core can execute 4 vector instructions on `8 * 128` ALUs. This gives us `8 * 128 * 4` FLOPs/cycle per core, or `8 * 128 * 4 * 2.2e9 = 9e12 FLOPs/s` (1.8e13 bfloat16 FLOPs/s since packed bfloat16 VREGs contain twice as many elements as float32 VREGs). Note how much smaller this is than the MXU FLOPs/s of about `5.8e14` per core (roughly 32x for bfloat16).
+*Answer*: Each cycle, each core can execute 4 vector instructions on `8 * 128` ALUs. This gives us `8 * 128 * 4` FLOPs/cycle per core, or `8 * 128 * 4 * 2.2e9 = 9e12 FLOPs/s` (1.8e13 bfloat16 FLOPs/s since packed bfloat16 VREGs contain twice as many elements as float32 VREGs). Note how much smaller this is than the MXU FLOPs/s of about `1.2e15` per core (roughly 64x for bfloat16).
 
 {% enddetails %}
 
